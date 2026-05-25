@@ -25,6 +25,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/chaosblade-io/chaosblade-operator/channel"
 	"github.com/chaosblade-io/chaosblade-operator/exec/model"
@@ -173,21 +174,24 @@ func (d *FailPodActionExecutor) destroy(ctx context.Context, expModel *spec.ExpM
 
 // failPod will exec failPod experiment
 func (d *FailPodActionExecutor) failPod(ctx context.Context, pod *v1.Pod) error {
-	for i, container := range pod.Spec.Containers {
+	return d.failPodWithClient(ctx, d.client, pod)
+}
+
+func (d *FailPodActionExecutor) failPodWithClient(ctx context.Context, client crclient.Client, pod *v1.Pod) error {
+	annotations := make(map[string]string)
+	containers := make([]v1.Container, 0, len(pod.Spec.Containers))
+	for _, container := range pod.Spec.Containers {
 		key := fmt.Sprintf("%s-%s", "failPod", container.Name)
-		if pod.Annotations == nil {
-			pod.Annotations = make(map[string]string)
-		}
 		if isAnnotationExist(pod.Annotations, key) {
 			continue
 		}
-		pod.Annotations[key] = container.Image
-		pod.Spec.Containers[i].Image = fmt.Sprintf("%s-fault-injection", container.Image)
+		annotations[key] = container.Image
+		containers = append(containers, v1.Container{
+			Name:  container.Name,
+			Image: fmt.Sprintf("%s-fault-injection", container.Image),
+		})
 	}
-	if err := d.client.Update(ctx, pod); err != nil {
-		return err
-	}
-	return nil
+	return patchPodImagesAndAnnotations(ctx, client, pod, containers, annotations)
 }
 
 // isAnnotationExist will check this pod has been tested

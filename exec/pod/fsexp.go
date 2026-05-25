@@ -271,19 +271,6 @@ func (d *PodIOActionExecutor) destroy(ctx context.Context, expModel *spec.ExpMod
 	return spec.ReturnResultIgnoreCode(experimentStatus)
 }
 
-func isPodReady(pod *v1.Pod) bool {
-	if pod.ObjectMeta.DeletionTimestamp != nil {
-		return false
-	}
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == v1.PodReady &&
-			condition.Status == v1.ConditionTrue {
-			return true
-		}
-	}
-	return false
-}
-
 func getChaosfsClient(pod *v1.Pod) (*chaosfs.ChaosBladeHookClient, error) {
 	port, err := getContainerPort(webhook.FuseServerPortName, pod)
 	if err != nil {
