@@ -37,6 +37,9 @@ ifeq ($(BLADE_VENDOR), )
 	BLADE_VENDOR=community
 endif
 
+OPERATOR_IMAGE_REPOSITORY ?= ghcr.io/chaosblade-io/chaosblade-operator
+OPERATOR_ARM64_IMAGE_REPOSITORY ?= ghcr.io/chaosblade-io/chaosblade-operator-arm64
+
 # Dynamically get Git information
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
@@ -173,15 +176,15 @@ build_binary: show-version
 
 build_linux_amd64_image:
 	CGO_ENABLED=0 GOOS="linux" GOARCH="amd64" go build $(GO_FLAGS) -o build/_output/bin/chaosblade-operator cmd/manager/main.go
-	$(CONTAINER_RUNTIME) buildx build -f build/image/amd/Dockerfile --platform=linux/amd64 -t ghcr.io/chaosblade-io/chaosblade-operator:${BLADE_VERSION} .
+	$(CONTAINER_RUNTIME) buildx build --load -f build/image/amd/Dockerfile --platform=linux/amd64 -t $(OPERATOR_IMAGE_REPOSITORY):${BLADE_VERSION} .
 
 build_linux_arm64_image:
 	CGO_ENABLED=0 GOOS="linux" GOARCH="arm64" go build $(GO_FLAGS) -o build/_output/bin/chaosblade-operator cmd/manager/main.go
-	$(CONTAINER_RUNTIME) buildx build -f build/image/arm/Dockerfile  --platform=linux/arm64  -t ghcr.io/chaosblade-io/chaosblade-operator-arm64:${BLADE_VERSION} .
+	$(CONTAINER_RUNTIME) buildx build --load -f build/image/arm/Dockerfile --platform=linux/arm64 -t $(OPERATOR_ARM64_IMAGE_REPOSITORY):${BLADE_VERSION} .
 
 push_image:
-	$(CONTAINER_RUNTIME) push ghcr.io/chaosblade-io/chaosblade-operator:${BLADE_VERSION}
-	$(CONTAINER_RUNTIME) push ghcr.io/chaosblade-io/chaosblade-operator-arm64:${BLADE_VERSION}
+	$(CONTAINER_RUNTIME) push $(OPERATOR_IMAGE_REPOSITORY):${BLADE_VERSION}
+	$(CONTAINER_RUNTIME) push $(OPERATOR_ARM64_IMAGE_REPOSITORY):${BLADE_VERSION}
 
 # Build Helm packages with version updates
 build_linux_amd64_helm: show-version pre_build
