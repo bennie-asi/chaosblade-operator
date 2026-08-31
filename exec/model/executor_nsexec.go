@@ -59,7 +59,7 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 	}
 	logrusField.Infof("experiment identifiers: %v", experimentIdentifiers)
 
-	statuses := experimentStatus.ResStatuses
+	statuses := make([]v1alpha1.ResourceStatus, len(experimentIdentifiers))
 	success := true
 	_, isDestroy := spec.IsDestroy(ctx)
 	updateResultLock := &sync.Mutex{}
@@ -107,13 +107,16 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 			execSuccess, rsStatus = execCommands(isDestroy, rsStatus, identifier, e.Client)
 		}
 		updateResultLock.Lock()
-		statuses = append(statuses, rsStatus)
+		statuses[i] = rsStatus
 		// If false occurs once, the result is fails
 		success = success && execSuccess
 		updateResultLock.Unlock()
 	}
 
 	ParallelizeExec(len(experimentIdentifiers), execCommandInPod)
+	if !success && !isDestroy {
+		statuses = compensateDatasourceCreate(expModel, statuses, experimentIdentifiers, e.Client)
+	}
 
 	logrusField.Infof("success: %t, statuses: %+v", success, statuses)
 	if success {
@@ -127,7 +130,7 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 		}
 	}
 	experimentStatus.Success = success
-	experimentStatus.ResStatuses = append(experimentStatus.ResStatuses, statuses...)
+	experimentStatus.ResStatuses = statuses
 
 	checkExperimentStatus(ctx, expModel, statuses, experimentIdentifiers, e.Client)
 	return spec.ReturnResultIgnoreCode(experimentStatus)
