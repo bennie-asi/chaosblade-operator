@@ -120,6 +120,10 @@ spec:
                               description: 'Resource identifier, rules as following: container:
                                     Namespace/NodeName/PodName/ContainerName pod： Namespace/NodeName/PodName'
                               type: string
+                            result:
+                              description: Action-specific structured result returned by the child blade process
+                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
                             kind:
                               description: Kind
                               type: string

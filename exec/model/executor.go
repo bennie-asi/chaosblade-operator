@@ -19,6 +19,7 @@ package model
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -190,7 +191,15 @@ func execCommands(isDestroy bool, rsStatus v1alpha1.ResourceStatus,
 
 	if response.Success {
 		if !isDestroy {
-			rsStatus.Id = response.Result.(string)
+			uid, detail, err := decodeCreateResult(response.Result)
+			if err != nil {
+				rsStatus = rsStatus.CreateFailResourceStatus(err.Error(), spec.ResultUnmarshalFailed.Code)
+				return false, rsStatus
+			}
+			rsStatus.Id = uid
+			rsStatus.Result = detail
+		} else {
+			rsStatus.Result = normalizeResult(response.Result)
 		}
 		rsStatus = rsStatus.CreateSuccessResourceStatus()
 		success = true
@@ -198,6 +207,78 @@ func execCommands(isDestroy bool, rsStatus v1alpha1.ResourceStatus,
 		rsStatus = rsStatus.CreateFailResourceStatus(response.Err, response.Code)
 	}
 	return success, rsStatus
+}
+
+type childCreateResult struct {
+	UID    string          `json:"uid"`
+	Detail json.RawMessage `json:"detail,omitempty"`
+}
+
+func decodeCreateResult(result interface{}) (string, json.RawMessage, error) {
+	if uid, ok := result.(string); ok {
+		if uid == "" {
+			return "", nil, fmt.Errorf("child experiment uid is empty")
+		}
+		return uid, nil, nil
+	}
+	value, err := json.Marshal(result)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal child create result: %w", err)
+	}
+	var envelope childCreateResult
+	if err := json.Unmarshal(value, &envelope); err != nil {
+		return "", nil, fmt.Errorf("decode child create result: %w", err)
+	}
+	if envelope.UID == "" {
+		return "", nil, fmt.Errorf("child create result has no uid")
+	}
+	return envelope.UID, envelope.Detail, nil
+}
+
+func normalizeResult(result interface{}) json.RawMessage {
+	if result == nil {
+		return nil
+	}
+	if value, ok := result.(string); ok {
+		var raw json.RawMessage
+		if json.Unmarshal([]byte(value), &raw) == nil {
+			return raw
+		}
+	}
+	value, err := json.Marshal(result)
+	if err != nil {
+		return nil
+	}
+	return value
+}
+
+func compensateDatasourceCreate(expModel *spec.ExpModel, statuses []v1alpha1.ResourceStatus,
+	identifiers []ExperimentIdentifierInPod, client *channel.Client,
+) []v1alpha1.ResourceStatus {
+	if expModel == nil || expModel.Target != "datasource" || expModel.ActionName != "connectionpoolfull" {
+		return statuses
+	}
+	for i := range statuses {
+		if !statuses[i].Success || statuses[i].Id == "" || i >= len(identifiers) {
+			continue
+		}
+		identifier := identifiers[i]
+		identifier.Id = statuses[i].Id
+		identifier.Command = fmt.Sprintf("%s destroy %s", getTargetChaosBladeBin(expModel), statuses[i].Id)
+		compensation := statuses[i]
+		ok, destroyed := execCommands(true, compensation, identifier, client)
+		statuses[i].Success = false
+		statuses[i].Result = destroyed.Result
+		if ok {
+			statuses[i].State = "ROLLED_BACK"
+			statuses[i].Error = "create succeeded but was rolled back because another resource failed"
+		} else {
+			statuses[i].State = "ROLLBACK_FAILED"
+			statuses[i].Error = destroyed.Error
+			statuses[i].Code = destroyed.Code
+		}
+	}
+	return statuses
 }
 
 func generateDestroyCommands(experimentId string, expModel *spec.ExpModel,

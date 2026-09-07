@@ -117,12 +117,14 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 	}
 
 	ParallelizeExec(len(experimentIdentifiers), execCommandInPod)
-
 	// Read success under lock for defensive synchronization,
 	// although wg.Wait() in ParallelizeExec already provides happens-before.
 	updateResultLock.Lock()
 	finalSuccess := success
 	updateResultLock.Unlock()
+	if !finalSuccess && !isDestroy {
+		statuses = compensateDatasourceCreate(expModel, statuses, experimentIdentifiers, e.Client)
+	}
 
 	logrusField.Infof("success: %t, statuses: %+v", finalSuccess, statuses)
 	if finalSuccess {

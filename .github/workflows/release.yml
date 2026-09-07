@@ -21,9 +21,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version number (e.g: 1.8.0)'
+        description: 'Version number (e.g: 1.8.1)'
         required: true
-        default: '1.8.0'
+        default: '1.8.1'
       draft:
         description: 'Create as draft release'
         required: false
@@ -32,7 +32,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: chaosblade-io/chaosblade-operator
+  IMAGE_NAME: bennie-asi/chaosblade-operator
+  OPERATOR_IMAGE_REPOSITORY: ghcr.io/bennie-asi/chaosblade-operator
+  OPERATOR_ARM64_IMAGE_REPOSITORY: ghcr.io/bennie-asi/chaosblade-operator-arm64
+  CONTAINER_RUNTIME: docker
   GO_VERSION: '1.25'
 
 permissions:
@@ -51,13 +54,13 @@ jobs:
             runs-on: ubuntu-latest
             dockerfile: build/image/amd/Dockerfile
             image_suffix: ""
-            image_tag: "ghcr.io/chaosblade-io/chaosblade-operator"
+            image_tag: "ghcr.io/bennie-asi/chaosblade-operator"
           - os: linux
             arch: arm64
             runs-on: ubuntu-24.04-arm
             dockerfile: build/image/arm/Dockerfile
             image_suffix: "-arm64"
-            image_tag: "ghcr.io/chaosblade-io/chaosblade-operator-arm64"
+            image_tag: "ghcr.io/bennie-asi/chaosblade-operator-arm64"
     
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -91,8 +94,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USER }}
-          password: ${{ secrets.GHCR_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and Push ${{ matrix.arch }} image
         env:
@@ -104,16 +107,16 @@ jobs:
           make build_linux_${{ matrix.arch }}_image
           
           echo "Built images:"
-          podman images | grep chaosblade-operator
+          docker images | grep chaosblade-operator
           
           echo "Pushing ${{ matrix.arch }} image..."
-          podman push ${{ matrix.image_tag }}:${{ steps.version.outputs.version }}
+          docker push ${{ matrix.image_tag }}:${{ steps.version.outputs.version }}
           
           # Only push latest tag if version doesn't contain 'dev'
           if [[ "${{ steps.version.outputs.version }}" != *"dev"* ]]; then
             echo "Pushing latest tag..."
-            podman tag ${{ matrix.image_tag }}:${{ steps.version.outputs.version }} ${{ matrix.image_tag }}:latest
-            podman push ${{ matrix.image_tag }}:latest
+            docker tag ${{ matrix.image_tag }}:${{ steps.version.outputs.version }} ${{ matrix.image_tag }}:latest
+            docker push ${{ matrix.image_tag }}:latest
           else
             echo "Skipping latest tag push for dev version: ${{ steps.version.outputs.version }}"
           fi
@@ -148,25 +151,6 @@ jobs:
           
           echo "Generated Helm packages:"
           ls -la target/*.tgz
-
-      - name: Setup OSSUTIL environment
-        uses: yizhoumo/setup-ossutil@v1.1.3
-        env:
-          BINARY_TAG: ${{ steps.version.outputs.version }}
-        with:
-          endpoint: ${{ secrets.OSS_ENDPOINT }}
-          access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-          ossutil-version: '1.7.14'
-
-      - name: Upload Helm packages to OSS
-        env:
-          BINARY_TAG: ${{ steps.version.outputs.version }}
-        run: |
-          echo "Uploading Helm packages to OSS..."
-          ossutil cp -f target/chaosblade-operator-amd64-${BINARY_TAG}.tgz oss://chaosblade/agent/github/${BINARY_TAG}/chaosblade-operator-amd64-${BINARY_TAG}.tgz
-          ossutil cp -f target/chaosblade-operator-arm64-${BINARY_TAG}.tgz oss://chaosblade/agent/github/${BINARY_TAG}/chaosblade-operator-arm64-${BINARY_TAG}.tgz
-          echo "Helm packages uploaded successfully"
 
       - name: Upload Helm packages as artifacts
         uses: actions/upload-artifact@v4
@@ -220,10 +204,10 @@ jobs:
             
             ```bash
             # AMD64
-            docker pull ghcr.io/chaosblade-io/chaosblade-operator:v${{ steps.version.outputs.version }}
+            docker pull ghcr.io/bennie-asi/chaosblade-operator:${{ steps.version.outputs.version }}
             
             # ARM64
-            docker pull ghcr.io/chaosblade-io/chaosblade-operator-arm64:v${{ steps.version.outputs.version }}
+            docker pull ghcr.io/bennie-asi/chaosblade-operator-arm64:${{ steps.version.outputs.version }}
             ```
             
             ### Helm Installation
@@ -235,12 +219,6 @@ jobs:
             # ARM64
             helm install chaosblade-operator ./chaosblade-operator-arm64-${{ steps.version.outputs.version }}.tgz
             ```
-            
-            ### OSS Download Links
-            
-            - [chaosblade-operator-amd64-${{ steps.version.outputs.version }}.tgz](https://chaosblade.oss-cn-hangzhou.aliyuncs.com/agent/github/${{ steps.version.outputs.version }}/chaosblade-operator-amd64-${{ steps.version.outputs.version }}.tgz)
-            - [chaosblade-operator-arm64-${{ steps.version.outputs.version }}.tgz](https://chaosblade.oss-cn-hangzhou.aliyuncs.com/agent/github/${{ steps.version.outputs.version }}/chaosblade-operator-arm64-${{ steps.version.outputs.version }}.tgz)
-            
           files: |
             chaosblade-operator-amd64-${{ steps.version.outputs.version }}.tgz
             chaosblade-operator-arm64-${{ steps.version.outputs.version }}.tgz

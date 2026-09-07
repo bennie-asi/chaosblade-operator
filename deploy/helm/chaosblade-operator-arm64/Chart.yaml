@@ -13,8 +13,8 @@
 # limitations under the License.
 
 apiVersion: v1
-appVersion: "1.8.0"
+appVersion: "1.8.1"
 description: ChaosBlade Operator
 name: chaosblade-operator-arm64
-version: 1.8.0
-home: https://github.com/chaosblade-io
+version: 1.8.1
+home: https://github.com/bennie-asi/chaosblade-operator

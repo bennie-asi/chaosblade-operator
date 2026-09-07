@@ -17,6 +17,8 @@
 package v1alpha1
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -116,6 +118,8 @@ type ResourceStatus struct {
 	// container: Namespace/NodeName/PodName/ContainerName
 	// pod： Namespace/NodeName/PodName
 	Identifier string `json:"identifier,omitempty"`
+	// Result contains action-specific structured details returned by the child blade process.
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 const (
