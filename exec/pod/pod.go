@@ -43,6 +43,19 @@ func NewResourceModelSpec(client *channel.Client) model.ResourceExpModelSpec {
 	}
 	// os experiment models
 	osExpModels := model.NewOSSubResourceModelSpec().ExpModels()
+	for _, expModel := range osExpModels {
+		if expModel.Name() == "cpu" || expModel.Name() == "mem" {
+			expModel.SetFlags(append(expModel.Flags(), model.ContainerNamesFlag))
+		}
+		for _, action := range expModel.Actions() {
+			switch action := action.(type) {
+			case *disk.BurnActionSpec:
+				action.ActionMatchers = append(action.ActionMatchers, model.ContainerNamesFlag)
+			case *disk.FillActionSpec:
+				action.ActionMatchers = append(action.ActionMatchers, model.ContainerNamesFlag)
+			}
+		}
+	}
 	spec.AddExecutorToModelSpec(&model.CommonExecutor{Client: client}, osExpModels...)
 	// pod-self experiment models
 	expModels := append(osExpModels, NewSelfExpModelCommandSpec(client))

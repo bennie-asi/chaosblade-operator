@@ -20,8 +20,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
 	"github.com/chaosblade-io/chaosblade-spec-go/spec"
+
+	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
 )
 
 func TestDecodeCreateResultLegacyUID(t *testing.T) {

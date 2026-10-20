@@ -18,6 +18,8 @@ package pod
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/chaosblade-io/chaosblade-exec-cri/exec/container"
 	"github.com/chaosblade-io/chaosblade-spec-go/spec"
@@ -71,10 +73,17 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 	if !resp.Success {
 		logrusField.Errorf("uid: %s, get matched pod experiment failed, %v", experimentId, resp.Err)
 		resp.Result = v1alpha1.CreateFailExperimentStatus(resp.Err, []v1alpha1.ResourceStatus{})
+		return resp
 	}
 	logrusField.Infof("creating pod experiment, pod count is %d", len(pods))
-	containerObjectMetaList := getContainerMatchedList(experimentId, pods)
+	containerName := strings.TrimSpace(expModel.ActionFlags[model.ContainerNamesFlag.Name])
+	containerObjectMetaList := getContainerMatchedList(experimentId, pods, containerName)
+	logrusField.Infof("pod count: %d, matched container count: %d", len(pods), len(containerObjectMetaList))
 	if len(containerObjectMetaList) == 0 {
+		if containerName != "" {
+			logrusField.WithField("container", containerName).Warn("no available target containers, skip injection")
+			return spec.ReturnSuccess(v1alpha1.CreateSuccessExperimentStatus([]v1alpha1.ResourceStatus{}))
+		}
 		logrusField.Errorf("uid: %s, get container from context failed", experimentId)
 		return spec.ResponseFailWithResult(spec.ContainerInContextNotFound,
 			v1alpha1.CreateFailExperimentStatus(spec.ContainerInContextNotFound.Msg, []v1alpha1.ResourceStatus{}))
@@ -123,18 +132,33 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 }
 
 // getContainerMatchedList transports selected pods
-func getContainerMatchedList(experimentId string, pods []v1.Pod) model.ContainerMatchedList {
+func getContainerMatchedList(experimentId string, pods []v1.Pod, targetContainerName string) model.ContainerMatchedList {
 	containerObjectMetaList := model.ContainerMatchedList{}
 	for _, p := range pods {
-		containerId, containerName, runtime, err := model.GetOneAvailableContainerIdFromPod(p)
-		if runtime == container.DockerRuntime {
-			containerId = containerId[:12]
+		var containerId, runtime string
+		var err error
+		containerName := targetContainerName
+		if targetContainerName == "" {
+			containerId, containerName, runtime, err = model.GetOneAvailableContainerIdFromPod(p)
+		} else {
+			containerId, runtime, err = getNamedContainerFromPod(p, targetContainerName)
 		}
-
 		if err != nil {
-			logrus.WithField("experiment", experimentId).WithField("pod", p.Name).
-				Errorf("get an available container failed, %v", err)
+			entry := logrus.WithFields(logrus.Fields{
+				"experiment": experimentId,
+				"namespace":  p.Namespace,
+				"pod":        p.Name,
+				"container":  containerName,
+			})
+			if targetContainerName == "" {
+				entry.Errorf("get an available container failed, %v", err)
+			} else {
+				entry.Warnf("skip target container: %v", err)
+			}
 			continue
+		}
+		if runtime == container.DockerRuntime && len(containerId) > 12 {
+			containerId = containerId[:12]
 		}
 		containerObjectMetaList = append(containerObjectMetaList, model.ContainerObjectMeta{
 			ContainerId:      containerId,
@@ -146,4 +170,30 @@ func getContainerMatchedList(experimentId string, pods []v1.Pod) model.Container
 		})
 	}
 	return containerObjectMetaList
+}
+
+func getNamedContainerFromPod(pod v1.Pod, name string) (containerID, runtime string, err error) {
+	for _, target := range pod.Spec.Containers {
+		if target.Name != name {
+			continue
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name != name {
+				continue
+			}
+			if status.State.Running == nil {
+				return "", "", fmt.Errorf("container is not running")
+			}
+			if status.ContainerID == "" {
+				return "", "", fmt.Errorf("container ID is empty")
+			}
+			runtime, containerID = model.TruncateContainerObjectMetaUid(status.ContainerID)
+			if containerID == "" || runtime == "" {
+				return "", "", fmt.Errorf("container ID is invalid")
+			}
+			return containerID, runtime, nil
+		}
+		return "", "", fmt.Errorf("container status is unavailable")
+	}
+	return "", "", fmt.Errorf("container not found")
 }
