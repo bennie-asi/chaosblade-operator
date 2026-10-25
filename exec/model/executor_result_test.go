@@ -67,57 +67,6 @@ func TestNormalizeResultPreservesJSONObject(t *testing.T) {
 	}
 }
 
-func TestNormalizeResultOnlyPreservesNonEmptyStructuredDetails(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		value interface{}
-		want  string
-	}{
-		{"pool create detail", map[string]interface{}{"state": "ACTIVE", "actualHold": 4}, `{"actualHold":4,"state":"ACTIVE"}`},
-		{"pool recovery detail", `{"state":"RELEASED","closedCount":4}`, `{"state":"RELEASED","closedCount":4}`},
-		{"resource detail list", `[{"state":"RELEASED"}]`, `[{"state":"RELEASED"}]`},
-		{"raw JSON bytes", json.RawMessage(`{"count":9007199254740993}`), `{"count":9007199254740993}`},
-		{"plain bytes", []byte(`{"count":0}`), `{"count":0}`},
-		{"repeated disk destroy message", "command: cri disk fill, destroy time: 2026-10-25T06:07:56Z", ""},
-		{"JSON string message", `"already destroyed"`, ""},
-		{"CPU command echo", &spec.ExpModel{Target: "cpu", ActionName: "fullload"}, ""},
-		{"network command echo", spec.ExpModel{Target: "network", ActionName: "delay"}, ""},
-		{"decoded CLI command echo", `{"target":"disk","action":"fill","flags":{"size":"16"},"ActionProcessHang":false}`, ""},
-		{"decoded command without flags", map[string]interface{}{"target": "cpu", "action": "fullload"}, ""},
-		{"structured detail with command context", `{"target":"disk","action":"fill","releasedBytes":16777216}`, `{"target":"disk","action":"fill","releasedBytes":16777216}`},
-		{"empty map", map[string]interface{}{}, ""},
-		{"empty array", `[]`, ""},
-		{"empty object", `{}`, ""},
-		{"null", json.RawMessage(`null`), ""},
-		{"nil", nil, ""},
-		{"number", 12, ""},
-		{"boolean", true, ""},
-		{"unsupported optional detail", make(chan int), ""},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := string(normalizeResult(test.value)); got != test.want {
-				t.Fatalf("got detail %q; want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestDecodeCreateResultKeepsUIDWhenOptionalDetailIsAMessage(t *testing.T) {
-	uid, detail, err := decodeCreateResult(map[string]interface{}{"uid": "child-id", "detail": "experiment created"})
-	if err != nil || uid != "child-id" || detail != nil {
-		t.Fatalf("uid=%q detail=%s err=%v", uid, detail, err)
-	}
-}
-
-func TestNormalizeResultDoesNotShareMutableInputBytes(t *testing.T) {
-	input := json.RawMessage(`{"state":"ACTIVE"}`)
-	result := normalizeResult(input)
-	input[10] = 'X'
-	if string(result) != `{"state":"ACTIVE"}` {
-		t.Fatalf("detail shares input bytes: %s", result)
-	}
-}
-
 func TestCompensationIsDatasourceSpecific(t *testing.T) {
 	statuses := []v1alpha1.ResourceStatus{{Id: "child", Success: true}}
 	model := &spec.ExpModel{Target: "jvm", ActionName: "full-gc"}

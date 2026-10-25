@@ -18,7 +18,6 @@
 operator:
   repository: ghcr.io/bennie-asi/chaosblade-operator-arm64
   version: 1.8.1
-  digest: ""
   # image.pullPolicy: must be Always|IfNotPresent|Never
   pullPolicy: IfNotPresent
   # qps of kubernetes client

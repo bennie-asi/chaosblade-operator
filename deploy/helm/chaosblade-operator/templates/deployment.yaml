@@ -41,7 +41,7 @@ spec:
               name: chaosblade
       containers:
         - name: chaosblade-operator
-          image: {{ .Values.operator.repository }}{{ if .Values.operator.digest }}@{{ .Values.operator.digest }}{{ else }}:{{ .Values.operator.version }}{{ end }}
+          image: {{ .Values.operator.repository }}:{{ .Values.operator.version }}
           command: ["chaosblade-operator"]
           args:
           {{- if .Values.blade.repository }}
