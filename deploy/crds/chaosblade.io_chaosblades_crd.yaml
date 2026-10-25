@@ -121,8 +121,7 @@ spec:
                                     Namespace/NodeName/PodName/ContainerName pod： Namespace/NodeName/PodName'
                               type: string
                             result:
-                              description: Action-specific structured result returned by the child blade process
-                              type: object
+                              description: Optional non-empty structured detail; ordinary messages are recorded in operator logs
                               x-kubernetes-preserve-unknown-fields: true
                             kind:
                               description: Kind

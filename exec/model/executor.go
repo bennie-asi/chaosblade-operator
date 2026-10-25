@@ -199,6 +199,8 @@ func execCommands(isDestroy bool, rsStatus v1alpha1.ResourceStatus,
 			rsStatus.Id = uid
 			rsStatus.Result = detail
 		} else {
+			// OutDecoder logs the complete child response. Ordinary destroy messages
+			// and command echoes do not belong in the optional CRD detail field.
 			rsStatus.Result = normalizeResult(response.Result)
 		}
 		rsStatus = rsStatus.CreateSuccessResourceStatus()
@@ -232,24 +234,61 @@ func decodeCreateResult(result interface{}) (string, json.RawMessage, error) {
 	if envelope.UID == "" {
 		return "", nil, fmt.Errorf("child create result has no uid")
 	}
-	return envelope.UID, envelope.Detail, nil
+	return envelope.UID, normalizeResult(envelope.Detail), nil
 }
 
 func normalizeResult(result interface{}) json.RawMessage {
-	if result == nil {
+	var value []byte
+	switch typed := result.(type) {
+	case nil, spec.ExpModel, *spec.ExpModel:
+		// A command model only repeats the experiment specification.
+		return nil
+	case string:
+		value = []byte(typed)
+	case json.RawMessage:
+		value = typed
+	case []byte:
+		value = typed
+	default:
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return nil
+		}
+		value = encoded
+	}
+	var decoded interface{}
+	if json.Unmarshal(value, &decoded) != nil {
 		return nil
 	}
-	if value, ok := result.(string); ok {
-		var raw json.RawMessage
-		if json.Unmarshal([]byte(value), &raw) == nil {
-			return raw
+	switch detail := decoded.(type) {
+	case map[string]interface{}:
+		if len(detail) == 0 || isCommandModelEcho(detail) {
+			return nil
+		}
+	case []interface{}:
+		if len(detail) == 0 {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return append(json.RawMessage(nil), value...)
+}
+
+func isCommandModelEcho(value map[string]interface{}) bool {
+	target, targetOK := value["target"].(string)
+	action, actionOK := value["action"].(string)
+	if !targetOK || !actionOK || target == "" || action == "" {
+		return false
+	}
+	for key := range value {
+		switch key {
+		case "target", "scope", "action", "flags", "programs", "categories", "ActionProcessHang":
+		default:
+			return false
 		}
 	}
-	value, err := json.Marshal(result)
-	if err != nil {
-		return nil
-	}
-	return value
+	return true
 }
 
 func compensateDatasourceCreate(expModel *spec.ExpModel, statuses []v1alpha1.ResourceStatus,

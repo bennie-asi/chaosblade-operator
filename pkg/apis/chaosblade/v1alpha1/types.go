@@ -118,7 +118,9 @@ type ResourceStatus struct {
 	// container: Namespace/NodeName/PodName/ContainerName
 	// pod： Namespace/NodeName/PodName
 	Identifier string `json:"identifier,omitempty"`
-	// Result contains action-specific structured details returned by the child blade process.
+	// Result optionally contains non-empty structured details returned by the child blade process.
+	// Ordinary messages and echoed command models are logged instead of being persisted here.
+	// +optional
 	Result json.RawMessage `json:"result,omitempty"`
 }
 
