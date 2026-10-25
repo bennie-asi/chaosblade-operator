@@ -118,8 +118,8 @@ type ResourceStatus struct {
 	// container: Namespace/NodeName/PodName/ContainerName
 	// pod： Namespace/NodeName/PodName
 	Identifier string `json:"identifier,omitempty"`
-	// Result optionally contains non-empty structured details returned by the child blade process.
-	// Ordinary messages and echoed command models are logged instead of being persisted here.
+	// Result optionally contains a non-empty datasource connection pool detail object.
+	// Other actions and ordinary messages only use the existing outcome fields and logs.
 	// +optional
 	Result json.RawMessage `json:"result,omitempty"`
 }

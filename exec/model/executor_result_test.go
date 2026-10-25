@@ -75,7 +75,7 @@ func TestNormalizeResultOnlyPreservesNonEmptyStructuredDetails(t *testing.T) {
 	}{
 		{"pool create detail", map[string]interface{}{"state": "ACTIVE", "actualHold": 4}, `{"actualHold":4,"state":"ACTIVE"}`},
 		{"pool recovery detail", `{"state":"RELEASED","closedCount":4}`, `{"state":"RELEASED","closedCount":4}`},
-		{"resource detail list", `[{"state":"RELEASED"}]`, `[{"state":"RELEASED"}]`},
+		{"resource detail list", `[{"state":"RELEASED"}]`, ""},
 		{"raw JSON bytes", json.RawMessage(`{"count":9007199254740993}`), `{"count":9007199254740993}`},
 		{"plain bytes", []byte(`{"count":0}`), `{"count":0}`},
 		{"repeated disk destroy message", "command: cri disk fill, destroy time: 2026-10-25T06:07:56Z", ""},
@@ -106,6 +106,30 @@ func TestDecodeCreateResultKeepsUIDWhenOptionalDetailIsAMessage(t *testing.T) {
 	uid, detail, err := decodeCreateResult(map[string]interface{}{"uid": "child-id", "detail": "experiment created"})
 	if err != nil || uid != "child-id" || detail != nil {
 		t.Fatalf("uid=%q detail=%s err=%v", uid, detail, err)
+	}
+}
+
+func TestOnlyDatasourceConnectionPoolPersistsDetail(t *testing.T) {
+	detail := `{"state":"RELEASED","closedCount":4}`
+	for _, test := range []struct {
+		name  string
+		model *spec.ExpModel
+		want  string
+	}{
+		{"datasource connection pool", &spec.ExpModel{Target: "datasource", ActionName: "connectionpoolfull"}, detail},
+		{"other datasource action", &spec.ExpModel{Target: "datasource", ActionName: "other"}, ""},
+		{"legacy druid action", &spec.ExpModel{Target: "druid", ActionName: "connectionpoolfull"}, ""},
+		{"disk", &spec.ExpModel{Target: "disk", ActionName: "fill"}, ""},
+		{"cpu", &spec.ExpModel{Target: "cpu", ActionName: "fullload"}, ""},
+		{"network", &spec.ExpModel{Target: "network", ActionName: "delay"}, ""},
+		{"jvm", &spec.ExpModel{Target: "jvm", ActionName: "full-gc"}, ""},
+		{"missing model", nil, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := string(datasourceResult(test.model, detail)); got != test.want {
+				t.Fatalf("got detail %q; want %q", got, test.want)
+			}
+		})
 	}
 }
 

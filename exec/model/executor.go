@@ -152,10 +152,11 @@ func checkExperimentStatus(ctx context.Context, expModel *spec.ExpModel, statuse
 	}
 }
 
-func execCommands(isDestroy bool, rsStatus v1alpha1.ResourceStatus,
+func execCommands(isDestroy bool, expModel *spec.ExpModel, rsStatus v1alpha1.ResourceStatus,
 	identifier ExperimentIdentifierInPod, client *channel.Client,
 ) (bool, v1alpha1.ResourceStatus) {
 	success := false
+	rsStatus.Result = nil
 	// handle chaos experiments using daemonset mode
 	podName := identifier.PodName
 	podNamespace := identifier.Namespace
@@ -197,11 +198,11 @@ func execCommands(isDestroy bool, rsStatus v1alpha1.ResourceStatus,
 				return false, rsStatus
 			}
 			rsStatus.Id = uid
-			rsStatus.Result = detail
+			rsStatus.Result = datasourceResult(expModel, detail)
 		} else {
 			// OutDecoder logs the complete child response. Ordinary destroy messages
 			// and command echoes do not belong in the optional CRD detail field.
-			rsStatus.Result = normalizeResult(response.Result)
+			rsStatus.Result = datasourceResult(expModel, response.Result)
 		}
 		rsStatus = rsStatus.CreateSuccessResourceStatus()
 		success = true
@@ -237,6 +238,13 @@ func decodeCreateResult(result interface{}) (string, json.RawMessage, error) {
 	return envelope.UID, normalizeResult(envelope.Detail), nil
 }
 
+func datasourceResult(model *spec.ExpModel, result interface{}) json.RawMessage {
+	if model == nil || model.Target != "datasource" || model.ActionName != "connectionpoolfull" {
+		return nil
+	}
+	return normalizeResult(result)
+}
+
 func normalizeResult(result interface{}) json.RawMessage {
 	var value []byte
 	switch typed := result.(type) {
@@ -263,10 +271,6 @@ func normalizeResult(result interface{}) json.RawMessage {
 	switch detail := decoded.(type) {
 	case map[string]interface{}:
 		if len(detail) == 0 || isCommandModelEcho(detail) {
-			return nil
-		}
-	case []interface{}:
-		if len(detail) == 0 {
 			return nil
 		}
 	default:
@@ -305,7 +309,7 @@ func compensateDatasourceCreate(expModel *spec.ExpModel, statuses []v1alpha1.Res
 		identifier.Id = statuses[i].Id
 		identifier.Command = fmt.Sprintf("%s destroy %s", getTargetChaosBladeBin(expModel), statuses[i].Id)
 		compensation := statuses[i]
-		ok, destroyed := execCommands(true, compensation, identifier, client)
+		ok, destroyed := execCommands(true, expModel, compensation, identifier, client)
 		statuses[i].Success = false
 		statuses[i].Result = destroyed.Result
 		if ok {

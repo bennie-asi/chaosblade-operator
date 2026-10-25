@@ -9,7 +9,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestPublishedCRDsAcceptRepeatedDestroyResult(t *testing.T) {
+func TestPublishedCRDsRequireOptionalObjectResult(t *testing.T) {
 	for _, file := range []string{
 		"deploy/crds/chaosblade.io_chaosblades_crd.yaml",
 		"deploy/helm/chaosblade-operator/crds/crd.yaml",
@@ -29,12 +29,19 @@ func TestPublishedCRDsAcceptRepeatedDestroyResult(t *testing.T) {
 				node := version.(map[string]interface{})
 				for _, field := range []string{
 					"schema", "openAPIV3Schema", "properties", "status", "properties", "expStatuses",
-					"items", "properties", "resStatuses", "items", "properties", "result",
+					"items", "properties", "resStatuses", "items",
 				} {
 					node = node[field].(map[string]interface{})
 				}
-				if node["type"] != nil || node["x-kubernetes-preserve-unknown-fields"] != true {
-					t.Fatalf("result must preserve both structured detail and repeated destroy strings: %v", node)
+				required, _ := node["required"].([]interface{})
+				for _, field := range required {
+					if field == "result" {
+						t.Fatal("result must remain optional")
+					}
+				}
+				detail := node["properties"].(map[string]interface{})["result"].(map[string]interface{})
+				if detail["type"] != "object" || detail["x-kubernetes-preserve-unknown-fields"] != true {
+					t.Fatalf("result must only allow a detail object: %v", detail)
 				}
 			}
 		})

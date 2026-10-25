@@ -103,7 +103,7 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 		}
 		if execSuccess {
 			logrusField.Infof("execute identifier: %+v", identifier)
-			execSuccess, rsStatus = execCommands(isDestroy, rsStatus, identifier, e.Client)
+			execSuccess, rsStatus = execCommands(isDestroy, expModel, rsStatus, identifier, e.Client)
 		}
 		// Use direct index assignment to preserve order correspondence with experimentIdentifiers.
 		// No lock needed for slice write since each goroutine writes to its own index.

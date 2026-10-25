@@ -121,7 +121,8 @@ spec:
                                     Namespace/NodeName/PodName/ContainerName pod： Namespace/NodeName/PodName'
                               type: string
                             result:
-                              description: Optional non-empty structured detail; ordinary messages are recorded in operator logs
+                              description: Optional datasource connection pool detail object; other actions use outcome fields and logs
+                              type: object
                               x-kubernetes-preserve-unknown-fields: true
                             kind:
                               description: Kind
