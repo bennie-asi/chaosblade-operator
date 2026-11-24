@@ -23,6 +23,7 @@ import (
 
 	"github.com/chaosblade-io/chaosblade-exec-cri/exec/container"
 	"github.com/chaosblade-io/chaosblade-spec-go/spec"
+	"github.com/chaosblade-io/chaosblade-spec-go/util"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 
@@ -68,6 +69,17 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 		}
 	}
 
+	var checkpoint model.NetworkTargetCheckpoint
+	if model.UsesProtocolList(expModel) {
+		var ok bool
+		checkpoint, ok = model.NetworkCheckpoint(ctx)
+		if !ok || checkpoint.Save == nil {
+			return spec.ReturnFail(spec.UnexpectedStatus, "missing durable network target checkpoint")
+		}
+		if checkpoint.Previous.State == model.NetworkTargetsReserved {
+			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("create result unknown after interrupted dispatch; recover the reserved targets", checkpoint.Previous.ResStatuses))
+		}
+	}
 	// Default flow: find matched pods and execute
 	pods, resp := e.GetMatchedPodResources(ctx, *expModel)
 	if !resp.Success {
@@ -88,8 +100,24 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 		return spec.ResponseFailWithResult(spec.ContainerInContextNotFound,
 			v1alpha1.CreateFailExperimentStatus(spec.ContainerInContextNotFound.Msg, []v1alpha1.ResourceStatus{}))
 	}
+	var reserved []v1alpha1.ResourceStatus
+	if model.UsesProtocolList(expModel) {
+		for i := range containerObjectMetaList {
+			obj := &containerObjectMetaList[i]
+			uid, err := util.GenerateUid()
+			if err != nil {
+				return spec.ReturnFail(spec.UnexpectedStatus, err.Error())
+			}
+			obj.Id = uid
+			reserved = append(reserved, v1alpha1.ResourceStatus{Kind: expSpec.Scope, Id: uid, Identifier: obj.GetIdentifier()})
+		}
+		pending := v1alpha1.ExperimentStatus{Scope: expSpec.Scope, Target: expSpec.Target, Action: expSpec.Action, State: model.NetworkTargetsReserved, ResStatuses: reserved}
+		if err := checkpoint.Save(pending); err != nil {
+			return spec.ReturnFail(spec.UnexpectedStatus, "persist child UIDs: "+err.Error())
+		}
+	}
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
-	return e.Exec(ctx, expModel)
+	return keepNetworkTargets(e.Exec(ctx, expModel), reserved)
 }
 
 func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.ExperimentSpec, oldExpStatus v1alpha1.ExperimentStatus) *spec.Response {
@@ -118,6 +146,9 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 	containerObjectMetaList := model.ContainerMatchedList{}
 	for _, status := range statuses {
 		// On a destroy retry, a failed resource still owns rules under its child UID.
+		if model.UsesProtocolList(expModel) && status.Id == "" && status.Identifier != "" {
+			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("child UID is unknown; cannot confirm recovery", statuses))
+		}
 		if !status.Success && !(model.UsesProtocolList(expModel) && status.Id != "") {
 			continue
 		}
@@ -131,12 +162,23 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
 	response := e.Exec(ctx, expModel)
 	if model.UsesProtocolList(expModel) {
-		// Target discovery can fail before execution emits per-target results.
-		// Keep the original identifiers so the next reconciliation can retry.
-		if status, ok := response.Result.(v1alpha1.ExperimentStatus); ok && !status.Success && len(status.ResStatuses) == 0 {
-			status.ResStatuses = statuses
-			response.Result = status
-		}
+		return keepNetworkTargets(response, statuses)
+	}
+	return response
+}
+
+// Errors before per-target execution may have no structured result at all.
+func keepNetworkTargets(response *spec.Response, targets []v1alpha1.ResourceStatus) *spec.Response {
+	if len(targets) == 0 {
+		return response
+	}
+	status, ok := response.Result.(v1alpha1.ExperimentStatus)
+	if !ok && !response.Success {
+		status = v1alpha1.CreateFailExperimentStatus(response.Err, nil)
+	}
+	if !status.Success && len(status.ResStatuses) == 0 {
+		status.ResStatuses = targets
+		response.Result = status
 	}
 	return response
 }

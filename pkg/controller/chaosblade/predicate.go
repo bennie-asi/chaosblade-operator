@@ -23,10 +23,20 @@ import (
 	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
+	"github.com/chaosblade-io/chaosblade-operator/exec/model"
 	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
 )
 
 type SpecUpdatedPredicateForRunningPhase struct{}
+
+func hasPodProtocolList(cb *v1alpha1.ChaosBlade) bool {
+	for _, exp := range cb.Spec.Experiments {
+		if model.UsesProtocolList(model.ExtractExpModelFromExperimentSpec(exp)) {
+			return true
+		}
+	}
+	return false
+}
 
 func (sup *SpecUpdatedPredicateForRunningPhase) Create(e event.TypedCreateEvent[*v1alpha1.ChaosBlade]) bool {
 	if e.Object == nil {
@@ -35,6 +45,17 @@ func (sup *SpecUpdatedPredicateForRunningPhase) Create(e event.TypedCreateEvent[
 	obj := e.Object
 	logrus.Infof("trigger create event, name: %s", obj.Name)
 	logrus.Debugf("creating obj: %+v", obj)
+	// Informers relist existing CRs as Create events on manager restart.
+	if hasPodProtocolList(obj) && contains(obj.GetFinalizers(), chaosbladeFinalizer) {
+		if obj.GetDeletionTimestamp() != nil || obj.Status.Phase == v1alpha1.ClusterPhaseDestroying {
+			return true
+		}
+		for _, status := range obj.Status.ExpStatuses {
+			if status.State == model.NetworkTargetsReserved {
+				return true
+			}
+		}
+	}
 	if obj.GetDeletionTimestamp() != nil {
 		logrus.Infof("unexpected phase for cb creating, name: %s, phase: %s", obj.Name, obj.Status.Phase)
 		return false

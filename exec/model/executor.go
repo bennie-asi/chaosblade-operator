@@ -197,6 +197,10 @@ func execCommands(isDestroy bool, expModel *spec.ExpModel, rsStatus v1alpha1.Res
 				rsStatus = rsStatus.CreateFailResourceStatus(err.Error(), spec.ResultUnmarshalFailed.Code)
 				return false, rsStatus
 			}
+			if UsesProtocolList(expModel) && identifier.Id != "" && uid != identifier.Id {
+				rsStatus = rsStatus.CreateFailResourceStatus("child returned a different UID than reserved", spec.UnexpectedStatus.Code)
+				return false, rsStatus
+			}
 			rsStatus.Id = uid
 			rsStatus.Result = datasourceResult(expModel, detail)
 		} else {

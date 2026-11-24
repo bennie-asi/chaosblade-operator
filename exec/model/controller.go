@@ -31,6 +31,28 @@ import (
 	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
 )
 
+// NetworkTargetCheckpoint is a write-ahead record for a Pod network create.
+type NetworkTargetCheckpoint struct {
+	Previous v1alpha1.ExperimentStatus
+	Save     func(v1alpha1.ExperimentStatus) error
+}
+
+type NetworkCheckpointCreator interface {
+	CreateWithCheckpoint(bladeName string, expSpec v1alpha1.ExperimentSpec, checkpoint NetworkTargetCheckpoint) v1alpha1.ExperimentStatus
+}
+
+type networkCheckpointKey struct{}
+
+func WithNetworkCheckpoint(ctx context.Context, checkpoint NetworkTargetCheckpoint) context.Context {
+	return context.WithValue(ctx, networkCheckpointKey{}, checkpoint)
+}
+func NetworkCheckpoint(ctx context.Context) (NetworkTargetCheckpoint, bool) {
+	checkpoint, ok := ctx.Value(networkCheckpointKey{}).(NetworkTargetCheckpoint)
+	return checkpoint, ok
+}
+
+const NetworkTargetsReserved = "NetworkTargetsReserved"
+
 type ExpController interface {
 	// controller Name
 	Name() string
