@@ -53,3 +53,25 @@ func TestKeepReservedUIDWhenDispatchReturnsNoStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestRollbackRequiresConfirmedDestroyForSameTarget(t *testing.T) {
+	created := v1alpha1.ResourceStatus{Id: "child", Identifier: "pod-a", State: v1alpha1.SuccessState, Success: true}
+	for _, tt := range []struct {
+		name, state, identifier string
+		wantDestroyed           bool
+	}{
+		{"saved create after transport error", v1alpha1.SuccessState, "pod-a", false},
+		{"different target", v1alpha1.DestroyedState, "pod-b", false},
+		{"confirmed recovery", v1alpha1.DestroyedState, "pod-a", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			targets := []v1alpha1.ResourceStatus{created}
+			result := created
+			result.State, result.Identifier = tt.state, tt.identifier
+			markRolledBackTargets(targets, []v1alpha1.ResourceStatus{result})
+			if got := targets[0].State == v1alpha1.DestroyedState; got != tt.wantDestroyed {
+				t.Fatalf("after rollback got %+v, want destroyed=%t", targets[0], tt.wantDestroyed)
+			}
+		})
+	}
+}

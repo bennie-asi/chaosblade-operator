@@ -138,22 +138,30 @@ func (e *ExpController) rollbackNetworkGroup(ctx context.Context, expSpec v1alph
 	ctx = spec.SetDestroyFlag(ctx, model.GetExperimentIdFromContext(ctx))
 	response := e.Destroy(ctx, expSpec, status)
 	if recovered, ok := response.Result.(v1alpha1.ExperimentStatus); ok {
-		results := make(map[string]v1alpha1.ResourceStatus, len(recovered.ResStatuses))
-		for _, target := range recovered.ResStatuses {
-			results[target.Id] = target
-		}
-		for i, target := range status.ResStatuses {
-			if result, exists := results[target.Id]; exists && result.Success {
-				status.ResStatuses[i].State = v1alpha1.DestroyedState
-				status.ResStatuses[i].Success = false
-			}
-		}
+		markRolledBackTargets(status.ResStatuses, recovered.ResStatuses)
 		if !recovered.Success {
 			status.Error += "; rollback pending: " + recovered.Error
 		}
 	}
 	status.State = v1alpha1.ErrorState
 	return spec.ReturnResultIgnoreCode(status)
+}
+
+// A transport error can return the saved create statuses. Only a confirmed
+// destroy outcome may remove a target from subsequent recovery attempts.
+func markRolledBackTargets(targets, results []v1alpha1.ResourceStatus) {
+	confirmed := make(map[string]string, len(results))
+	for _, result := range results {
+		if result.State == v1alpha1.DestroyedState && result.Success && result.Id != "" {
+			confirmed[result.Id] = result.Identifier
+		}
+	}
+	for i, target := range targets {
+		if identifier, ok := confirmed[target.Id]; ok && identifier == target.Identifier {
+			targets[i].State = v1alpha1.DestroyedState
+			targets[i].Success = false
+		}
+	}
 }
 
 func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.ExperimentSpec, oldExpStatus v1alpha1.ExperimentStatus) *spec.Response {
@@ -180,15 +188,16 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 		return spec.ReturnSuccess(v1alpha1.CreateSuccessExperimentStatus([]v1alpha1.ResourceStatus{}))
 	}
 	containerObjectMetaList := model.ContainerMatchedList{}
+	networkGroup := model.UsesProtocolList(expModel)
 	for _, status := range statuses {
-		if model.UsesProtocolList(expModel) && (status.State == model.NetworkCreateSkipped || status.State == v1alpha1.DestroyedState) {
+		if networkGroup && (status.State == model.NetworkCreateSkipped || status.State == v1alpha1.DestroyedState) {
 			continue
 		}
 		// On a destroy retry, a failed resource still owns rules under its child UID.
-		if model.UsesProtocolList(expModel) && status.Id == "" && status.Identifier != "" {
+		if networkGroup && status.Id == "" && status.Identifier != "" {
 			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("child UID is unknown; cannot confirm recovery", statuses))
 		}
-		if !status.Success && !(model.UsesProtocolList(expModel) && status.Id != "") {
+		if !status.Success && !(networkGroup && status.Id != "") {
 			continue
 		}
 		containerObjectMeta := model.ParseIdentifier(status.Identifier)
@@ -200,7 +209,7 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 	}
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
 	response := e.Exec(ctx, expModel)
-	if model.UsesProtocolList(expModel) {
+	if networkGroup {
 		return keepNetworkTargets(response, statuses)
 	}
 	return response

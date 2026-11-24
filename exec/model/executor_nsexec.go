@@ -94,6 +94,9 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 					rsStatus.CreateSuccessResourceStatus()
 					rsStatus.Error = msg
 					skipGonePod = isDestroy && UsesProtocolList(expModel)
+					if skipGonePod {
+						rsStatus.State = v1alpha1.DestroyedState
+					}
 				} else {
 					// if get pod error, the execution is considered failure
 					msg := fmt.Sprintf("get pod: %s in %s error",
