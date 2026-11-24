@@ -59,6 +59,12 @@ func NetworkCheckpoint(ctx context.Context) (NetworkTargetCheckpoint, bool) {
 // NetworkTargetsReserved marks persisted target UIDs whose dispatch outcome is unknown.
 const NetworkTargetsReserved = "NetworkTargetsReserved"
 
+// NetworkCreateSkipped records the executor's UID-specific confirmation that it did not inject.
+const NetworkCreateSkipped = "NetworkCreateSkipped"
+
+// NetworkRollbackPending records the targets before compensating a failed group create.
+const NetworkRollbackPending = "NetworkRollbackPending"
+
 type ExpController interface {
 	// controller Name
 	Name() string

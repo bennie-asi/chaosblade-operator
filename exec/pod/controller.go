@@ -76,6 +76,9 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 		if !ok || checkpoint.Save == nil {
 			return spec.ReturnFail(spec.UnexpectedStatus, "missing durable network target checkpoint")
 		}
+		if checkpoint.Previous.State == model.NetworkRollbackPending {
+			return e.rollbackNetworkGroup(ctx, expSpec, checkpoint.Previous)
+		}
 		if checkpoint.Previous.State == model.NetworkTargetsReserved {
 			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("create result unknown after interrupted dispatch; recover the reserved targets", checkpoint.Previous.ResStatuses))
 		}
@@ -117,7 +120,40 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 		}
 	}
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
-	return keepNetworkTargets(e.Exec(ctx, expModel), reserved)
+	response := keepNetworkTargets(e.Exec(ctx, expModel), reserved)
+	status, ok := response.Result.(v1alpha1.ExperimentStatus)
+	if len(reserved) < 2 || !ok || status.Success {
+		return response
+	}
+	status.State = model.NetworkRollbackPending
+	if err := checkpoint.Save(status); err != nil {
+		return spec.ReturnFail(spec.UnexpectedStatus, "persist network rollback targets: "+err.Error())
+	}
+	return e.rollbackNetworkGroup(ctx, expSpec, status)
+}
+
+// Roll back every possibly injected target using its reserved UID. Preserve
+// each confirmed outcome so a later destroy retries only unresolved targets.
+func (e *ExpController) rollbackNetworkGroup(ctx context.Context, expSpec v1alpha1.ExperimentSpec, status v1alpha1.ExperimentStatus) *spec.Response {
+	ctx = spec.SetDestroyFlag(ctx, model.GetExperimentIdFromContext(ctx))
+	response := e.Destroy(ctx, expSpec, status)
+	if recovered, ok := response.Result.(v1alpha1.ExperimentStatus); ok {
+		results := make(map[string]v1alpha1.ResourceStatus, len(recovered.ResStatuses))
+		for _, target := range recovered.ResStatuses {
+			results[target.Id] = target
+		}
+		for i, target := range status.ResStatuses {
+			if result, exists := results[target.Id]; exists && result.Success {
+				status.ResStatuses[i].State = v1alpha1.DestroyedState
+				status.ResStatuses[i].Success = false
+			}
+		}
+		if !recovered.Success {
+			status.Error += "; rollback pending: " + recovered.Error
+		}
+	}
+	status.State = v1alpha1.ErrorState
+	return spec.ReturnResultIgnoreCode(status)
 }
 
 func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.ExperimentSpec, oldExpStatus v1alpha1.ExperimentStatus) *spec.Response {
@@ -145,6 +181,9 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 	}
 	containerObjectMetaList := model.ContainerMatchedList{}
 	for _, status := range statuses {
+		if model.UsesProtocolList(expModel) && (status.State == model.NetworkCreateSkipped || status.State == v1alpha1.DestroyedState) {
+			continue
+		}
 		// On a destroy retry, a failed resource still owns rules under its child UID.
 		if model.UsesProtocolList(expModel) && status.Id == "" && status.Identifier != "" {
 			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("child UID is unknown; cannot confirm recovery", statuses))

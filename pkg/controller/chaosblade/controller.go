@@ -68,6 +68,7 @@ func newReconciler(mgr manager.Manager) *ReconcileChaosBlade {
 	cbClient := mgr.GetClient().(*channel.Client)
 	return &ReconcileChaosBlade{
 		client:   cbClient,
+		reader:   mgr.GetAPIReader(),
 		scheme:   mgr.GetScheme(),
 		Executor: exec.NewDispatcherExecutor(cbClient),
 	}
@@ -180,6 +181,7 @@ type ReconcileChaosBlade struct {
 	// This client, initialized using mgr.Client() above, is a split client
 	// that reads objects from the cache and writes to the apiserver
 	client   *channel.Client
+	reader   client.Reader
 	scheme   *runtime.Scheme
 	Executor model.ExpController
 }
@@ -194,9 +196,11 @@ func (r *ReconcileChaosBlade) Reconcile(ctx context.Context, request reconcile.R
 	forget := reconcile.Result{}
 	// Fetch the RC instance
 	cb := &v1alpha1.ChaosBlade{}
-	err := r.client.Get(ctx, request.NamespacedName, cb)
+	// Checkpoint and final status writes can arrive at the informer in different
+	// turns. Make dispatch and recovery decisions from the API server.
+	err := r.reader.Get(ctx, request.NamespacedName, cb)
 	if err != nil {
-		return forget, nil
+		return forget, client.IgnoreNotFound(err)
 	}
 	if len(cb.Spec.Experiments) == 0 {
 		return forget, nil
@@ -267,8 +271,11 @@ func (r *ReconcileChaosBlade) Reconcile(ctx context.Context, request reconcile.R
 		// Retry status update on conflict to avoid re-executing Create side effects
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latestCb := &v1alpha1.ChaosBlade{}
-			if err := r.client.Get(ctx, request.NamespacedName, latestCb); err != nil {
+			if err := r.reader.Get(ctx, request.NamespacedName, latestCb); err != nil {
 				return err
+			}
+			if latestCb.UID != cb.UID || latestCb.Generation != cb.Generation || latestCb.Status.Phase != originalPhase {
+				return nil
 			}
 			latestCb.Status.ExpStatuses = expStatusList
 			latestCb.Status.Phase = phase

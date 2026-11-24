@@ -51,7 +51,7 @@ func (sup *SpecUpdatedPredicateForRunningPhase) Create(e event.TypedCreateEvent[
 			return true
 		}
 		for _, status := range obj.Status.ExpStatuses {
-			if status.State == model.NetworkTargetsReserved {
+			if status.State == model.NetworkTargetsReserved || status.State == model.NetworkRollbackPending {
 				return true
 			}
 		}
