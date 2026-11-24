@@ -31,6 +31,40 @@ import (
 	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
 )
 
+// NetworkTargetCheckpoint is a write-ahead record for a Pod network create.
+type NetworkTargetCheckpoint struct {
+	Previous v1alpha1.ExperimentStatus
+	Save     func(v1alpha1.ExperimentStatus) error
+}
+
+// NetworkCheckpointCreator saves target UIDs before dispatching a Pod network fault.
+// If saving fails, creation must stop so the controller can retry the status update.
+type NetworkCheckpointCreator interface {
+	CreateWithCheckpoint(bladeName string, expSpec v1alpha1.ExperimentSpec, checkpoint NetworkTargetCheckpoint) v1alpha1.ExperimentStatus
+}
+
+type networkCheckpointKey struct{}
+
+// WithNetworkCheckpoint makes the controller's checkpoint available to the Pod executor.
+func WithNetworkCheckpoint(ctx context.Context, checkpoint NetworkTargetCheckpoint) context.Context {
+	return context.WithValue(ctx, networkCheckpointKey{}, checkpoint)
+}
+
+// NetworkCheckpoint returns the checkpoint for this create operation, if present.
+func NetworkCheckpoint(ctx context.Context) (NetworkTargetCheckpoint, bool) {
+	checkpoint, ok := ctx.Value(networkCheckpointKey{}).(NetworkTargetCheckpoint)
+	return checkpoint, ok
+}
+
+// NetworkTargetsReserved marks persisted target UIDs whose dispatch outcome is unknown.
+const NetworkTargetsReserved = "NetworkTargetsReserved"
+
+// NetworkCreateSkipped records the executor's UID-specific confirmation that it did not inject.
+const NetworkCreateSkipped = "NetworkCreateSkipped"
+
+// NetworkRollbackPending records the targets before compensating a failed group create.
+const NetworkRollbackPending = "NetworkRollbackPending"
+
 type ExpController interface {
 	// controller Name
 	Name() string

@@ -23,6 +23,7 @@ import (
 
 	"github.com/chaosblade-io/chaosblade-exec-cri/exec/container"
 	"github.com/chaosblade-io/chaosblade-spec-go/spec"
+	"github.com/chaosblade-io/chaosblade-spec-go/util"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 
@@ -68,6 +69,20 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 		}
 	}
 
+	var checkpoint model.NetworkTargetCheckpoint
+	if model.UsesProtocolList(expModel) {
+		var ok bool
+		checkpoint, ok = model.NetworkCheckpoint(ctx)
+		if !ok || checkpoint.Save == nil {
+			return spec.ReturnFail(spec.UnexpectedStatus, "missing durable network target checkpoint")
+		}
+		if checkpoint.Previous.State == model.NetworkRollbackPending {
+			return e.rollbackNetworkGroup(ctx, expSpec, checkpoint.Previous)
+		}
+		if checkpoint.Previous.State == model.NetworkTargetsReserved {
+			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("create result unknown after interrupted dispatch; recover the reserved targets", checkpoint.Previous.ResStatuses))
+		}
+	}
 	// Default flow: find matched pods and execute
 	pods, resp := e.GetMatchedPodResources(ctx, *expModel)
 	if !resp.Success {
@@ -88,8 +103,65 @@ func (e *ExpController) Create(ctx context.Context, expSpec v1alpha1.ExperimentS
 		return spec.ResponseFailWithResult(spec.ContainerInContextNotFound,
 			v1alpha1.CreateFailExperimentStatus(spec.ContainerInContextNotFound.Msg, []v1alpha1.ResourceStatus{}))
 	}
+	var reserved []v1alpha1.ResourceStatus
+	if model.UsesProtocolList(expModel) {
+		for i := range containerObjectMetaList {
+			obj := &containerObjectMetaList[i]
+			uid, err := util.GenerateUid()
+			if err != nil {
+				return spec.ReturnFail(spec.UnexpectedStatus, err.Error())
+			}
+			obj.Id = uid
+			reserved = append(reserved, v1alpha1.ResourceStatus{Kind: expSpec.Scope, Id: uid, Identifier: obj.GetIdentifier()})
+		}
+		pending := v1alpha1.ExperimentStatus{Scope: expSpec.Scope, Target: expSpec.Target, Action: expSpec.Action, State: model.NetworkTargetsReserved, ResStatuses: reserved}
+		if err := checkpoint.Save(pending); err != nil {
+			return spec.ReturnFail(spec.UnexpectedStatus, "persist child UIDs: "+err.Error())
+		}
+	}
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
-	return e.Exec(ctx, expModel)
+	response := keepNetworkTargets(e.Exec(ctx, expModel), reserved)
+	status, ok := response.Result.(v1alpha1.ExperimentStatus)
+	if len(reserved) < 2 || !ok || status.Success {
+		return response
+	}
+	status.State = model.NetworkRollbackPending
+	if err := checkpoint.Save(status); err != nil {
+		return spec.ReturnFail(spec.UnexpectedStatus, "persist network rollback targets: "+err.Error())
+	}
+	return e.rollbackNetworkGroup(ctx, expSpec, status)
+}
+
+// Roll back every possibly injected target using its reserved UID. Preserve
+// each confirmed outcome so a later destroy retries only unresolved targets.
+func (e *ExpController) rollbackNetworkGroup(ctx context.Context, expSpec v1alpha1.ExperimentSpec, status v1alpha1.ExperimentStatus) *spec.Response {
+	ctx = spec.SetDestroyFlag(ctx, model.GetExperimentIdFromContext(ctx))
+	response := e.Destroy(ctx, expSpec, status)
+	if recovered, ok := response.Result.(v1alpha1.ExperimentStatus); ok {
+		markRolledBackTargets(status.ResStatuses, recovered.ResStatuses)
+		if !recovered.Success {
+			status.Error += "; rollback pending: " + recovered.Error
+		}
+	}
+	status.State = v1alpha1.ErrorState
+	return spec.ReturnResultIgnoreCode(status)
+}
+
+// A transport error can return the saved create statuses. Only a confirmed
+// destroy outcome may remove a target from subsequent recovery attempts.
+func markRolledBackTargets(targets, results []v1alpha1.ResourceStatus) {
+	confirmed := make(map[string]string, len(results))
+	for _, result := range results {
+		if result.State == v1alpha1.DestroyedState && result.Success && result.Id != "" {
+			confirmed[result.Id] = result.Identifier
+		}
+	}
+	for i, target := range targets {
+		if identifier, ok := confirmed[target.Id]; ok && identifier == target.Identifier {
+			targets[i].State = v1alpha1.DestroyedState
+			targets[i].Success = false
+		}
+	}
 }
 
 func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.ExperimentSpec, oldExpStatus v1alpha1.ExperimentStatus) *spec.Response {
@@ -116,8 +188,16 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 		return spec.ReturnSuccess(v1alpha1.CreateSuccessExperimentStatus([]v1alpha1.ResourceStatus{}))
 	}
 	containerObjectMetaList := model.ContainerMatchedList{}
+	networkGroup := model.UsesProtocolList(expModel)
 	for _, status := range statuses {
-		if !status.Success {
+		if networkGroup && (status.State == model.NetworkCreateSkipped || status.State == v1alpha1.DestroyedState) {
+			continue
+		}
+		// On a destroy retry, a failed resource still owns rules under its child UID.
+		if networkGroup && status.Id == "" && status.Identifier != "" {
+			return spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("child UID is unknown; cannot confirm recovery", statuses))
+		}
+		if !status.Success && !(networkGroup && status.Id != "") {
 			continue
 		}
 		containerObjectMeta := model.ParseIdentifier(status.Identifier)
@@ -128,7 +208,27 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 		return spec.ReturnSuccess(v1alpha1.CreateSuccessExperimentStatus([]v1alpha1.ResourceStatus{}))
 	}
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
-	return e.Exec(ctx, expModel)
+	response := e.Exec(ctx, expModel)
+	if networkGroup {
+		return keepNetworkTargets(response, statuses)
+	}
+	return response
+}
+
+// Errors before per-target execution may have no structured result at all.
+func keepNetworkTargets(response *spec.Response, targets []v1alpha1.ResourceStatus) *spec.Response {
+	if len(targets) == 0 {
+		return response
+	}
+	status, ok := response.Result.(v1alpha1.ExperimentStatus)
+	if !ok && !response.Success {
+		status = v1alpha1.CreateFailExperimentStatus(response.Err, nil)
+	}
+	if !status.Success && len(status.ResStatuses) == 0 {
+		status.ResStatuses = targets
+		response.Result = status
+	}
+	return response
 }
 
 // getContainerMatchedList transports selected pods

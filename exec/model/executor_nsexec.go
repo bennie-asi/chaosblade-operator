@@ -66,6 +66,7 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 
 	execCommandInPod := func(i int) {
 		execSuccess := true
+		skipGonePod := false
 		identifier := experimentIdentifiers[i]
 
 		rsStatus := v1alpha1.ResourceStatus{
@@ -92,6 +93,10 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 					logrusField.Warningln(msg)
 					rsStatus.CreateSuccessResourceStatus()
 					rsStatus.Error = msg
+					skipGonePod = isDestroy && UsesProtocolList(expModel)
+					if skipGonePod {
+						rsStatus.State = v1alpha1.DestroyedState
+					}
 				} else {
 					// if get pod error, the execution is considered failure
 					msg := fmt.Sprintf("get pod: %s in %s error",
@@ -99,9 +104,18 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 					rsStatus.CreateFailResourceStatus(msg, spec.K8sExecFailed.Code)
 					execSuccess = false
 				}
+			} else if isDestroy && UsesProtocolList(expModel) {
+				// Query the live Pod, not a label list which can include exited sandboxes.
+				id, _, runtimeName, resolveErr := GetOneAvailableContainerIdFromPod(*pod)
+				if resolveErr != nil || id == "" || runtimeName == "" || pod.Spec.NodeName != identifier.NodeName {
+					rsStatus.CreateFailResourceStatus("cannot resolve a live Pod container on the original node", spec.K8sExecFailed.Code)
+					execSuccess = false
+				} else {
+					identifier.Command += fmt.Sprintf(" --container-runtime %s --container-id %s", runtimeName, id)
+				}
 			}
 		}
-		if execSuccess {
+		if execSuccess && !skipGonePod {
 			logrusField.Infof("execute identifier: %+v", identifier)
 			execSuccess, rsStatus = execCommands(isDestroy, expModel, rsStatus, identifier, e.Client)
 		}
@@ -144,6 +158,12 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 	return spec.ReturnResultIgnoreCode(experimentStatus)
 }
 
+// UsesProtocolList identifies Pod faults whose kernel rules are owned by the per-target UID.
+func UsesProtocolList(exp *spec.ExpModel) bool {
+	return exp.Scope == "pod" && exp.Target == "network" && strings.Contains(exp.ActionFlags["protocol"], ",") &&
+		(exp.ActionName == "delay" || exp.ActionName == "loss" || exp.ActionName == "reorder")
+}
+
 func getExperimentIdentifiersWithNsexec(ctx context.Context, expModel *spec.ExpModel, client *channel.Client) ([]ExperimentIdentifierInPod, error) {
 	delete(expModel.ActionFlags, "uid")
 	containerObjectMetaList, err := GetContainerObjectMetaListFromContext(ctx)
@@ -180,7 +200,12 @@ func getExperimentIdentifiersWithNsexec(ctx context.Context, expModel *spec.ExpM
 	identifiers := make([]ExperimentIdentifierInPod, 0)
 	for idx, obj := range containerObjectMetaList {
 		var generatedCommand string
-		if expModel.Target == "network" && handle == "destroy" && expModel.ActionName != "dns" {
+		if destroy && UsesProtocolList(expModel) {
+			if obj.Id == "" {
+				return nil, fmt.Errorf("missing child UID for Pod %s/%s", obj.Namespace, obj.PodName)
+			}
+			generatedCommand = fmt.Sprintf("%s --uid %s", command, obj.Id)
+		} else if expModel.Target == "network" && handle == "destroy" && expModel.ActionName != "dns" {
 			labels := []string{
 				fmt.Sprintf("io.kubernetes.pod.name=%s", obj.PodName),
 				fmt.Sprintf("io.kubernetes.pod.namespace=%s", obj.Namespace),

@@ -65,6 +65,10 @@ func (e *ResourceDispatchedController) Name() string {
 }
 
 func (e *ResourceDispatchedController) Create(bladeName string, expSpec v1alpha1.ExperimentSpec) v1alpha1.ExperimentStatus {
+	return e.CreateWithCheckpoint(bladeName, expSpec, model.NetworkTargetCheckpoint{})
+}
+
+func (e *ResourceDispatchedController) CreateWithCheckpoint(bladeName string, expSpec v1alpha1.ExperimentSpec, checkpoint model.NetworkTargetCheckpoint) v1alpha1.ExperimentStatus {
 	logrus.WithField("experiment", bladeName).Infof("start to create experiment")
 	controller := e.Controllers[expSpec.Scope]
 	if controller == nil {
@@ -75,7 +79,7 @@ func (e *ResourceDispatchedController) Create(bladeName string, expSpec v1alpha1
 		}
 	}
 	ctx := model.SetExperimentIdToContext(context.Background(), bladeName)
-	response := controller.Create(ctx, expSpec)
+	response := controller.Create(model.WithNetworkCheckpoint(ctx, checkpoint), expSpec)
 	experimentStatus := createExperimentStatusByResponse(response)
 	experimentStatus.Scope = expSpec.Scope
 	experimentStatus.Target = expSpec.Target

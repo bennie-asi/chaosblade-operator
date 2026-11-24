@@ -68,6 +68,7 @@ func newReconciler(mgr manager.Manager) *ReconcileChaosBlade {
 	cbClient := mgr.GetClient().(*channel.Client)
 	return &ReconcileChaosBlade{
 		client:   cbClient,
+		reader:   mgr.GetAPIReader(),
 		scheme:   mgr.GetScheme(),
 		Executor: exec.NewDispatcherExecutor(cbClient),
 	}
@@ -147,6 +148,10 @@ func periodicallyCleanUpBlade(ctx context.Context, cli client.Client, interval t
 		if item.DeletionTimestamp == nil {
 			continue
 		}
+		// Recovery of a marked qdisc remains pending until its target confirms it.
+		if hasPodProtocolList(&item) {
+			continue
+		}
 		sub := time.Now().Sub(item.DeletionTimestamp.Time)
 		if item.Status.Phase == v1alpha1.ClusterPhaseDestroying && sub.Seconds() > interval.Seconds() {
 			logrus.Infof("periodically clean up blade %s, deletion time: %s", item.Name, item.DeletionTimestamp.String())
@@ -176,6 +181,7 @@ type ReconcileChaosBlade struct {
 	// This client, initialized using mgr.Client() above, is a split client
 	// that reads objects from the cache and writes to the apiserver
 	client   *channel.Client
+	reader   client.Reader
 	scheme   *runtime.Scheme
 	Executor model.ExpController
 }
@@ -190,9 +196,11 @@ func (r *ReconcileChaosBlade) Reconcile(ctx context.Context, request reconcile.R
 	forget := reconcile.Result{}
 	// Fetch the RC instance
 	cb := &v1alpha1.ChaosBlade{}
-	err := r.client.Get(ctx, request.NamespacedName, cb)
+	// Checkpoint and final status writes can arrive at the informer in different
+	// turns. Make dispatch and recovery decisions from the API server.
+	err := r.reader.Get(ctx, request.NamespacedName, cb)
 	if err != nil {
-		return forget, nil
+		return forget, client.IgnoreNotFound(err)
 	}
 	if len(cb.Spec.Experiments) == 0 {
 		return forget, nil
@@ -250,8 +258,11 @@ func (r *ReconcileChaosBlade) Reconcile(ctx context.Context, request reconcile.R
 		originalPhase := cb.Status.Phase
 		expStatusList := make([]v1alpha1.ExperimentStatus, 0)
 		phase := v1alpha1.ClusterPhaseError
-		for _, exp := range cb.Spec.Experiments {
-			experimentStatus := r.Executor.Create(cb.Name, exp)
+		for idx := range cb.Spec.Experiments {
+			experimentStatus, err := r.createExperiment(ctx, cb, idx)
+			if err != nil {
+				return reconcile.Result{}, err
+			}
 			if experimentStatus.Success {
 				phase = v1alpha1.ClusterPhaseRunning
 			}
@@ -260,8 +271,11 @@ func (r *ReconcileChaosBlade) Reconcile(ctx context.Context, request reconcile.R
 		// Retry status update on conflict to avoid re-executing Create side effects
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latestCb := &v1alpha1.ChaosBlade{}
-			if err := r.client.Get(ctx, request.NamespacedName, latestCb); err != nil {
+			if err := r.reader.Get(ctx, request.NamespacedName, latestCb); err != nil {
 				return err
+			}
+			if latestCb.UID != cb.UID || latestCb.Generation != cb.Generation || latestCb.Status.Phase != originalPhase {
+				return nil
 			}
 			latestCb.Status.ExpStatuses = expStatusList
 			latestCb.Status.Phase = phase
@@ -321,6 +335,33 @@ func (r *ReconcileChaosBlade) Reconcile(ctx context.Context, request reconcile.R
 		reqLogger.Errorln("can not found matchers in annotations field")
 	}
 	return forget, nil
+}
+
+func (r *ReconcileChaosBlade) createExperiment(ctx context.Context, cb *v1alpha1.ChaosBlade, idx int) (v1alpha1.ExperimentStatus, error) {
+	exp := cb.Spec.Experiments[idx]
+	if !model.UsesProtocolList(model.ExtractExpModelFromExperimentSpec(exp)) {
+		return r.Executor.Create(cb.Name, exp), nil
+	}
+	creator, ok := r.Executor.(model.NetworkCheckpointCreator)
+	if !ok {
+		return v1alpha1.ExperimentStatus{}, fmt.Errorf("network executor cannot persist child UIDs")
+	}
+	var checkpoint model.NetworkTargetCheckpoint
+	if idx < len(cb.Status.ExpStatuses) {
+		checkpoint.Previous = cb.Status.ExpStatuses[idx]
+	}
+	var saveErr error
+	checkpoint.Save = func(pending v1alpha1.ExperimentStatus) error {
+		for len(cb.Status.ExpStatuses) < len(cb.Spec.Experiments) {
+			cb.Status.ExpStatuses = append(cb.Status.ExpStatuses, v1alpha1.ExperimentStatus{})
+		}
+		cb.Status.ExpStatuses[idx] = pending
+		// Optimistic concurrency prevents dispatch using a stale CR version.
+		saveErr = r.client.Status().Update(ctx, cb)
+		return saveErr
+	}
+	status := creator.CreateWithCheckpoint(cb.Name, exp, checkpoint)
+	return status, saveErr
 }
 
 // finalizeChaosBlade

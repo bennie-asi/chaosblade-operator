@@ -197,6 +197,10 @@ func execCommands(isDestroy bool, expModel *spec.ExpModel, rsStatus v1alpha1.Res
 				rsStatus = rsStatus.CreateFailResourceStatus(err.Error(), spec.ResultUnmarshalFailed.Code)
 				return false, rsStatus
 			}
+			if UsesProtocolList(expModel) && identifier.Id != "" && uid != identifier.Id {
+				rsStatus = rsStatus.CreateFailResourceStatus("child returned a different UID than reserved", spec.UnexpectedStatus.Code)
+				return false, rsStatus
+			}
 			rsStatus.Id = uid
 			rsStatus.Result = datasourceResult(expModel, detail)
 		} else {
@@ -208,6 +212,21 @@ func execCommands(isDestroy bool, expModel *spec.ExpModel, rsStatus v1alpha1.Res
 		success = true
 	} else {
 		rsStatus = rsStatus.CreateFailResourceStatus(response.Err, response.Code)
+		if UsesProtocolList(expModel) && identifier.Id != "" {
+			receipt, _ := response.Result.(map[string]interface{})
+			switch {
+			case !isDestroy && receipt["networkCreateSkippedUID"] == identifier.Id:
+				rsStatus.State = NetworkCreateSkipped
+			case isDestroy && receipt["networkRootAbsentUID"] == identifier.Id:
+				rsStatus = rsStatus.CreateSuccessResourceStatus()
+				rsStatus.Error = ""
+				rsStatus.Code = 0
+				success = true
+			}
+		}
+	}
+	if success && isDestroy && UsesProtocolList(expModel) {
+		rsStatus.State = v1alpha1.DestroyedState
 	}
 	return success, rsStatus
 }
