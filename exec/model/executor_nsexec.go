@@ -144,6 +144,12 @@ func (e *CommonExecutor) Exec(uid string, ctx context.Context, expModel *spec.Ex
 	return spec.ReturnResultIgnoreCode(experimentStatus)
 }
 
+// UsesProtocolList identifies Pod faults whose kernel rules are owned by the per-target UID.
+func UsesProtocolList(exp *spec.ExpModel) bool {
+	return exp.Scope == "pod" && exp.Target == "network" && strings.Contains(exp.ActionFlags["protocol"], ",") &&
+		(exp.ActionName == "delay" || exp.ActionName == "loss" || exp.ActionName == "reorder")
+}
+
 func getExperimentIdentifiersWithNsexec(ctx context.Context, expModel *spec.ExpModel, client *channel.Client) ([]ExperimentIdentifierInPod, error) {
 	delete(expModel.ActionFlags, "uid")
 	containerObjectMetaList, err := GetContainerObjectMetaListFromContext(ctx)
@@ -195,6 +201,9 @@ func getExperimentIdentifiersWithNsexec(ctx context.Context, expModel *spec.ExpM
 				return identifiers, fmt.Errorf("unsupported container runtime %s", obj.ContainerRuntime)
 			}
 			generatedCommand = fmt.Sprintf("%s --container-label-selector %s --container-runtime %s", command, strings.Join(labels, ","), obj.ContainerRuntime)
+			if UsesProtocolList(expModel) && obj.Id != "" {
+				generatedCommand = fmt.Sprintf("%s --uid %s", generatedCommand, obj.Id)
+			}
 		} else {
 			generatedCommand = fmt.Sprintf("%s --container-id %s", command, obj.ContainerId)
 			if expModel.ActionProcessHang {

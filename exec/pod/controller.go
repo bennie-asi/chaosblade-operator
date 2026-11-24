@@ -117,7 +117,8 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 	}
 	containerObjectMetaList := model.ContainerMatchedList{}
 	for _, status := range statuses {
-		if !status.Success {
+		// On a destroy retry, a failed resource still owns rules under its child UID.
+		if !status.Success && !(model.UsesProtocolList(expModel) && status.Id != "") {
 			continue
 		}
 		containerObjectMeta := model.ParseIdentifier(status.Identifier)
@@ -128,7 +129,16 @@ func (e *ExpController) Destroy(ctx context.Context, expSpec v1alpha1.Experiment
 		return spec.ReturnSuccess(v1alpha1.CreateSuccessExperimentStatus([]v1alpha1.ResourceStatus{}))
 	}
 	ctx = model.SetContainerObjectMetaListToContext(ctx, containerObjectMetaList)
-	return e.Exec(ctx, expModel)
+	response := e.Exec(ctx, expModel)
+	if model.UsesProtocolList(expModel) {
+		// Target discovery can fail before execution emits per-target results.
+		// Keep the original identifiers so the next reconciliation can retry.
+		if status, ok := response.Result.(v1alpha1.ExperimentStatus); ok && !status.Success && len(status.ResStatuses) == 0 {
+			status.ResStatuses = statuses
+			response.Result = status
+		}
+	}
+	return response
 }
 
 // getContainerMatchedList transports selected pods
