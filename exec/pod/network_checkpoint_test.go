@@ -17,17 +17,39 @@
 package pod
 
 import (
-	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
-	"github.com/chaosblade-io/chaosblade-spec-go/spec"
 	"testing"
+
+	"github.com/chaosblade-io/chaosblade-spec-go/spec"
+
+	"github.com/chaosblade-io/chaosblade-operator/pkg/apis/chaosblade/v1alpha1"
 )
 
 func TestKeepReservedUIDWhenDispatchReturnsNoStatus(t *testing.T) {
-	reserved := []v1alpha1.ResourceStatus{{Id: "child", Identifier: "ns/node/pod/container/id/containerd"}}
-	for _, response := range []*spec.Response{spec.ReturnFail(spec.UnexpectedStatus, "stream closed"), spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("lost response", nil))} {
-		status := keepNetworkTargets(response, reserved).Result.(v1alpha1.ExperimentStatus)
-		if status.Success || len(status.ResStatuses) != 1 || status.ResStatuses[0].Id != "child" || status.ResStatuses[0].Identifier != reserved[0].Identifier {
-			t.Fatal(status)
-		}
+	want := v1alpha1.ResourceStatus{Id: "child", Identifier: "ns/node/pod/container/id/containerd"}
+	tests := []struct {
+		name     string
+		response *spec.Response
+	}{
+		{"stream closed", spec.ReturnFail(spec.UnexpectedStatus, "stream closed")},
+		{"lost response", spec.ReturnSuccess(v1alpha1.CreateFailExperimentStatus("lost response", nil))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := keepNetworkTargets(tt.response, []v1alpha1.ResourceStatus{want}).Result
+			status, ok := result.(v1alpha1.ExperimentStatus)
+			if !ok {
+				t.Fatalf("result has type %T, want ExperimentStatus", result)
+			}
+			if status.Success {
+				t.Error("dispatch without a target status reported success")
+			}
+			if got := len(status.ResStatuses); got != 1 {
+				t.Fatalf("got %d target statuses, want 1", got)
+			}
+			got := status.ResStatuses[0]
+			if got.Id != want.Id || got.Identifier != want.Identifier {
+				t.Errorf("got UID %q, target %q; want UID %q, target %q", got.Id, got.Identifier, want.Id, want.Identifier)
+			}
+		})
 	}
 }
